@@ -17,6 +17,8 @@ def get_date_value(url):
         tds = soup.find_all('td', class_='pe-5')
         for td in tds:
             td = td.text
+            td = td.strip()
+            td = float(td)
             value_ls.append(td)
         combined_data = list(zip(date_ls, value_ls))
     return combined_data
@@ -52,13 +54,10 @@ def get_date_value(url):
 
 
 
-
-# maybe combine the two into a tuple or dict
-# limit to 25
-# add db
 def main (): 
     url = "https://fred.stlouisfed.org/data/WEI"
     print(get_date_value(url))
+    # print(len(get_date_value(url)))
 
 if __name__ == '__main__':
     main()
