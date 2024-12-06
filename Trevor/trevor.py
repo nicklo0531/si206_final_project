@@ -237,7 +237,7 @@ def main():
         "META": 5
     }
     
-    db_name = 'StockDatabase.db'  # Use a single database for all stocks
+    db_name = 'Trevor/StockDatabase.db'  # Use a single database for all stocks
 
     # Create the database and tables
     conn, cursor = create_database(db_name)
