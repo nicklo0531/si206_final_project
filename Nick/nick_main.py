@@ -74,6 +74,5 @@ def main ():
     store_data(curr, conn, data)
 
 
-
 if __name__ == '__main__':
     main()
