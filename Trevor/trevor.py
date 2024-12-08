@@ -138,7 +138,7 @@ def create_database(db_name):
             PRIMARY KEY (stock_id, date) 
         ) 
     ''')
-
+    conn.commit()
     # Create Stocks table
     cursor.execute('''CREATE TABLE IF NOT EXISTS Stocks ( 
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -237,7 +237,7 @@ def main():
         "META": 5
     }
     
-    db_name = 'Trevor/StockDatabase.db'  # Use a single database for all stocks
+    db_name = 'FINAL/final.db'  # Use a single database for all stocks
 
     # Create the database and tables
     conn, cursor = create_database(db_name)

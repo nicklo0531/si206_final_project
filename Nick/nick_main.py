@@ -68,7 +68,8 @@ def main ():
     data = get_date_value(url)
 
     # create database
-    curr, conn = create_database("Nick/WeeklyEconomicIndexDB_test4.db")
+    # curr, conn = create_database("Nick/WeeklyEconomicIndexDB_test5.db")
+    curr, conn = create_database("FINAL/final.db")
 
     # insert data
     store_data(curr, conn, data)
