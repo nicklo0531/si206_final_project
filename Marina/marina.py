@@ -1,171 +1,176 @@
 import requests
 import sqlite3
-from datetime import datetime
+import time 
 
-# Database file name
-DB_NAME = "stock_data.db"
+# Define API and database details
+API_URL = "https://api.polygon.io/v2/reference/news"
+API_KEY = "p0i66s1388GS9jpK9pCrib2s6Gdm7ZYU"
+DB_NAME = "PolygonSentimentDatabase.db"
+STOCK_SYMBOLS = ["NVDA", "AAPL", "AMZN", "MSFT", "META"]
 
-# API base URL and token
-API_TOKEN = "MJ61gfmue5eWaca8G1C1GhnBd0YDLFcn1soRB30H"
-API_URL = "https://api.stockdata.org/v1/news/all"
+def get_stock_id(ticker):
+    """Map ticker to stock_id"""
+    stock_mapping = {
+        "NVDA": 1,
+        "AAPL": 2,
+        "AMZN": 3,
+        "MSFT": 4,
+        "META": 5
+    }
+    return stock_mapping.get(ticker, 0)
 
-# Stock symbols to fetch sentiment for
-STOCK_SYMBOLS = ["AAPL", "NVDA", "MSFT", "AMZN", "META"]
+def fetch_data_from_api(ticker, limit=25):
+    """Fetch data from the Polygon API for a specific ticker"""
+    url = f"{API_URL}?ticker={ticker}&limit={limit}&apiKey={API_KEY}"
+    response = requests.get(url)
+    response.raise_for_status()
+    return response.json()
 
-def fetch_stock_sentiment(api_token, symbols, limit=25):
-    sentiments = []
-    
-    # Calculate per-symbol limit to distribute across symbols
-    per_symbol_limit = max(1, limit // len(symbols))
-    
-    for symbol in symbols:
-        params = {
-            "api_token": api_token,
-            "symbols": symbol,
-            "filter_entities": "true",
-            "language": "en",
-            "limit": per_symbol_limit
-        }
-        try:
-            response = requests.get(API_URL, params=params)
-            response.raise_for_status()
-            data = response.json()
-            
-            symbol_sentiments = []
-            for article in data.get("data", []):
-                for entity in article.get("entities", []):
-                    if entity.get("symbol") == symbol and entity.get("sentiment_score") is not None:
-                        symbol_sentiments.append((symbol, entity["sentiment_score"]))
-                        if len(symbol_sentiments) >= per_symbol_limit:
-                            break
-                if len(symbol_sentiments) >= per_symbol_limit:
-                    break
-            
-            sentiments.extend(symbol_sentiments)
-
-        except Exception as e:
-            print(f"Error fetching data for {symbol}: {e}")
-    
-    return sentiments[:limit]
-
-def setup_database():
-    """
-    Create the SQLite database and tables if they don't exist.
-    """
-    conn = sqlite3.connect(DB_NAME)
+def create_database(db_name):
+    """Create database and tables if they don't exist"""
+    conn = sqlite3.connect(db_name)
     cursor = conn.cursor()
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS Stocks (
-        stock_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticker TEXT UNIQUE
-    )
-    """)
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS Sentiments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        stock_id INTEGER,
-        sentiment_score REAL,
-        retrieved_at TEXT,
-        UNIQUE(stock_id, sentiment_score, retrieved_at),
-        FOREIGN KEY (stock_id) REFERENCES Stocks (stock_id)
-    )
-    """)
-    
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Stocks (
+            stock_id INTEGER PRIMARY KEY,
+            ticker TEXT UNIQUE
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS SentimentData (
+            stock_id INTEGER,
+            date TEXT,
+            sentiment_score INTEGER,
+            title TEXT,
+            description TEXT,
+            article_url TEXT,
+            PRIMARY KEY (stock_id, article_url),
+            FOREIGN KEY (stock_id) REFERENCES Stocks(stock_id)
+        )
+    ''')
+
+    # Insert stock tickers into the Stocks table
+    for ticker in STOCK_SYMBOLS:
+        cursor.execute('INSERT OR IGNORE INTO Stocks (ticker) VALUES (?)', (ticker,))
     conn.commit()
-    conn.close()
+    return conn, cursor
 
-def store_data(sentiments):
+def sentiment_mapping(sentiment):
+    """Map sentiment strings to numeric scores"""
+    mapping = {"positive": 1, "neutral": 0, "negative": -1}
+    return mapping.get(sentiment.lower(), 0)
+
+def insert_25_new_rows(cursor, conn, stock_id, articles):
+    """Insert exactly 25 rows for a specific stock"""
+    cursor.execute('SELECT COUNT(*) FROM SentimentData WHERE stock_id = ?', (stock_id,))
+    current_count = cursor.fetchone()[0]
+
+    if current_count >= 25:
+        print(f"Already have 25 rows for stock_id {stock_id}. Skipping.")
+        return False
+
+    rows_to_insert = []
+    for article in articles:
+        if len(rows_to_insert) == 25:
+            break
+
+        date = article.get("published_utc", "").split("T")[0]
+        title = article.get("title", "")
+        description = article.get("description", "")
+        article_url = article.get("article_url", "")
+        insights = article.get("insights", [])
+
+        if insights:
+            sentiment = insights[0].get("sentiment", "neutral")
+            sentiment_score = sentiment_mapping(sentiment)
+            row = (stock_id, date, sentiment_score, title, description, article_url)
+            rows_to_insert.append(row)
+
+    if rows_to_insert:
+        #print(rows_to_insert)
+        cursor.executemany('''
+            INSERT OR IGNORE INTO SentimentData (
+                stock_id, date, sentiment_score, title, description, article_url
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        ''', rows_to_insert)
+        conn.commit()
+        print(f"Inserted {len(rows_to_insert)} new rows for stock_id {stock_id}")
+        return True
+
+    print(f"No new rows to insert for stock_id {stock_id}")
+    return False
+
+def insert_remaining_rows(cursor, conn, stock_id, articles):
     """
-    Store stock sentiment data in the SQLite database.
-
-    Args:
-        sentiments (list): A list of tuples containing stock symbol and sentiment score.
-
-    Returns:
-        int: Number of new entries inserted
+    Inserts all remaining rows for a given stock into the database.
     """
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    inserted_count = 0
-    retrieval_time = datetime.now().isoformat()
-    
-    for symbol, sentiment in sentiments:
-        # Insert or ignore stock ticker
-        cursor.execute("INSERT OR IGNORE INTO Stocks (ticker) VALUES (?)", (symbol,))
+    rows_to_insert = []
+
+    for article in articles:
+        date = article.get("published_utc", "").split("T")[0]
+        title = article.get("title", "")
+        description = article.get("description", "")
+        article_url = article.get("article_url", "")
+        insights = article.get("insights", [])
         
-        # Get stock_id for the symbol
-        cursor.execute("SELECT stock_id FROM Stocks WHERE ticker = ?", (symbol,))
-        stock_id = cursor.fetchone()[0]
-        
-        # Insert sentiment with unique constraints
-        try:
-            cursor.execute("""
-            INSERT OR IGNORE INTO Sentiments (stock_id, sentiment_score, retrieved_at)
-            VALUES (?, ?, ?)
-            """, (stock_id, sentiment, retrieval_time))
-            
-            if cursor.rowcount > 0:  # Only count if a new row was added
-                inserted_count += 1
-        except sqlite3.IntegrityError:
-            # This helps prevent duplicate entries
-            pass
-    
-    conn.commit()
-    conn.close()
-    print(f"Inserted {inserted_count} new entries")
-    return inserted_count
+        if insights:
+            sentiment = insights[0].get("sentiment", "neutral")
+            sentiment_score = sentiment_mapping(sentiment)
+            row = (stock_id, date, sentiment_score, title, description, article_url)
+            rows_to_insert.append(row)
 
-def display_data():
-    """
-    Display data from the database.
-    """
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT COUNT(*) FROM Sentiments")
-    total_entries = cursor.fetchone()[0]
-    print(f"\nTotal entries in database: {total_entries}")
-    
-    cursor.execute("""
-    SELECT Stocks.ticker, Sentiments.sentiment_score, Sentiments.retrieved_at
-    FROM Sentiments
-    JOIN Stocks ON Sentiments.stock_id = Stocks.stock_id
-    ORDER BY Sentiments.retrieved_at DESC
-    LIMIT 25
-    """)
-    data = cursor.fetchall()
-    print("\n=== Most Recent Sentiment Data ===")
-    for row in data:
-        print(f"Stock: {row[0]}, Sentiment Score: {row[1]:.4f}, Retrieved At: {row[2]}")
-    
-    cursor.execute("""
-    SELECT ticker, COUNT(*) as entry_count
-    FROM Stocks
-    JOIN Sentiments ON Stocks.stock_id = Sentiments.stock_id
-    GROUP BY ticker
-    ORDER BY entry_count DESC
-    """)
-    stock_coverage = cursor.fetchall()
-    print("\n=== Stock Coverage ===")
-    for stock, count in stock_coverage:
-        print(f"{stock}: {count} entries")
-    
+    if rows_to_insert:
+        cursor.executemany('''
+            INSERT OR IGNORE INTO SentimentData (
+                stock_id, date, sentiment_score, title, description, article_url
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        ''', rows_to_insert)
+        conn.commit()
+        print(f"Inserted {len(rows_to_insert)} rows for stock_id {stock_id}")
+
+def main():
+    # Create database connection
+    conn, cursor = create_database(DB_NAME)
+
+    # Determine which stock to process based on row counts
+    for stock_ticker in STOCK_SYMBOLS:
+        stock_id = get_stock_id(stock_ticker)
+
+        # Check how many rows are already inserted for this stock
+        cursor.execute('SELECT COUNT(*) FROM SentimentData WHERE stock_id = ?', (stock_id,))
+        current_count = cursor.fetchone()[0]
+
+        # If less than 25 rows, fetch and insert new data
+        if current_count < 25:
+            print(f"Fetching data for {stock_ticker} (stock_id {stock_id})...")
+            try:
+                data = fetch_data_from_api(stock_ticker, limit=25)
+                articles = data.get("results", [])
+                if insert_25_new_rows(cursor, conn, stock_id, articles):
+                    break  # Stop after processing one stock
+            except Exception as e:
+                print(f"Error fetching or inserting data for {stock_ticker}: {e}")
+                continue
+
+
+    # After ensuring 25 rows per stock, insert all remaining data
+    cursor.execute('SELECT COUNT(*) FROM SentimentData')
+    total_rows = cursor.fetchone()[0]
+    if total_rows >= 125:
+        print("125 rows (25 per stock) achieved. Inserting historical data...")
+        time.sleep(60)
+        for stock_ticker in STOCK_SYMBOLS:
+            stock_id = get_stock_id(stock_ticker)
+            try:
+                data = fetch_data_from_api(stock_ticker, limit=1000)
+                articles = data.get("results", [])
+                insert_remaining_rows(cursor, conn, stock_id, articles)
+            except Exception as e:
+                print(f"Error fetching historical data for {stock_ticker}: {e}")
+
     conn.close()
 
 if __name__ == "__main__":
-    print("Fetching sentiment data...")
-    
-    setup_database()
-    all_sentiments = fetch_stock_sentiment(API_TOKEN, STOCK_SYMBOLS, limit=25)
-
-    print(f"Fetched a total of {len(all_sentiments)} sentiment entries")
-    
-    if all_sentiments:
-        print("Storing data to the database...")
-        store_data(all_sentiments)
-        display_data()
-    else:
-        print("No data fetched.")
+    main()
