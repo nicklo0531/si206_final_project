@@ -6,11 +6,47 @@ from datetime import datetime
 DB_NAME = "stock_data.db"
 
 # API base URL and token
-API_TOKEN = "DBWBsuNrwrWF8B9X3t7srsHXKMNBUVsNmqVKD2dR"
+API_TOKEN = "MJ61gfmue5eWaca8G1C1GhnBd0YDLFcn1soRB30H"
 API_URL = "https://api.stockdata.org/v1/news/all"
 
 # Stock symbols to fetch sentiment for
 STOCK_SYMBOLS = ["AAPL", "NVDA", "MSFT", "AMZN", "META"]
+
+def fetch_stock_sentiment(api_token, symbols, limit=25):
+    sentiments = []
+    
+    # Calculate per-symbol limit to distribute across symbols
+    per_symbol_limit = max(1, limit // len(symbols))
+    
+    for symbol in symbols:
+        params = {
+            "api_token": api_token,
+            "symbols": symbol,
+            "filter_entities": "true",
+            "language": "en",
+            "limit": per_symbol_limit
+        }
+        try:
+            response = requests.get(API_URL, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            symbol_sentiments = []
+            for article in data.get("data", []):
+                for entity in article.get("entities", []):
+                    if entity.get("symbol") == symbol and entity.get("sentiment_score") is not None:
+                        symbol_sentiments.append((symbol, entity["sentiment_score"]))
+                        if len(symbol_sentiments) >= per_symbol_limit:
+                            break
+                if len(symbol_sentiments) >= per_symbol_limit:
+                    break
+            
+            sentiments.extend(symbol_sentiments)
+
+        except Exception as e:
+            print(f"Error fetching data for {symbol}: {e}")
+    
+    return sentiments[:limit]
 
 def setup_database():
     """
@@ -40,45 +76,6 @@ def setup_database():
     conn.commit()
     conn.close()
 
-
-def fetch_stock_sentiment(api_token, symbols, limit=25):
-    sentiments = []
-    
-    # Calculate per-symbol limit to distribute across symbols
-    per_symbol_limit = max(1, limit // len(symbols))
-    
-    for symbol in symbols:
-        params = {
-            "api_token": api_token,
-            "symbols": symbol,
-            "filter_entities": "true",
-            "language": "en",
-            "limit": per_symbol_limit
-        }
-        try:
-            response = requests.get(API_URL, params=params)
-            response.raise_for_status()
-            data = response.json()
-            
-            symbol_sentiments = []
-            for article in data.get("data", []):
-                published_date = article.get('published_at', [])
-                for entity in article.get("entities", []):
-                    if entity.get("symbol") == symbol and entity.get("sentiment_score") is not None:
-                        symbol_sentiments.append((symbol, entity["sentiment_score"], published_date))
-                        if len(symbol_sentiments) >= per_symbol_limit:
-                            break
-                if len(symbol_sentiments) >= per_symbol_limit:
-                    break
-            
-            sentiments.extend(symbol_sentiments)
-
-        except Exception as e:
-            print(f"Error fetching data for {symbol}: {e}")
-    
-    return sentiments[:limit]
-
-
 def store_data(sentiments):
     """
     Store stock sentiment data in the SQLite database.
@@ -93,8 +90,9 @@ def store_data(sentiments):
     cursor = conn.cursor()
     
     inserted_count = 0
+    retrieval_time = datetime.now().isoformat()
     
-    for symbol, sentiment, published_date in sentiments:
+    for symbol, sentiment in sentiments:
         # Insert or ignore stock ticker
         cursor.execute("INSERT OR IGNORE INTO Stocks (ticker) VALUES (?)", (symbol,))
         
@@ -107,7 +105,7 @@ def store_data(sentiments):
             cursor.execute("""
             INSERT OR IGNORE INTO Sentiments (stock_id, sentiment_score, retrieved_at)
             VALUES (?, ?, ?)
-            """, (stock_id, sentiment, published_date))
+            """, (stock_id, sentiment, retrieval_time))
             
             if cursor.rowcount > 0:  # Only count if a new row was added
                 inserted_count += 1
@@ -141,7 +139,7 @@ def display_data():
     data = cursor.fetchall()
     print("\n=== Most Recent Sentiment Data ===")
     for row in data:
-        print(f"Stock: {row[0]}, Sentiment Score: {row[1]:.4f}, Published At: {row[2]}")
+        print(f"Stock: {row[0]}, Sentiment Score: {row[1]:.4f}, Retrieved At: {row[2]}")
     
     cursor.execute("""
     SELECT ticker, COUNT(*) as entry_count
