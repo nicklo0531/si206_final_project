@@ -5,7 +5,7 @@ import time
 # Define API and database details
 API_URL = "https://api.polygon.io/v2/reference/news"
 API_KEY = "p0i66s1388GS9jpK9pCrib2s6Gdm7ZYU"
-DB_NAME = "PolygonSentimentDatabase.db"
+DB_NAME = "FINAL/final.db"
 STOCK_SYMBOLS = ["NVDA", "AAPL", "AMZN", "MSFT", "META"]
 
 def get_stock_id(ticker):
